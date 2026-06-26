@@ -1,0 +1,11 @@
+# Parámetros por defecto del pipeline.
+# En Databricks, los widgets (catalog, landing) tienen prioridad sobre estos.
+catalog: valueprops
+bronze_schema: bronze
+silver_schema: silver
+gold_schema: gold
+landing: /Volumes/valueprops/raw/landing
+
+# Reglas de negocio (ver ../../docs/assumptions.md)
+feature_window_days: 21   # "3 semanas previas" al print
+serving_window_days: 7    # "última semana" de prints a servir

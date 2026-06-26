@@ -1,0 +1,25 @@
+# ---------------------------------------------------------------------------
+# Dependencias para desarrollo LOCAL y tests (Mac).
+# En Databricks, PySpark y Delta ya vienen en el runtime (DBR 14.3 LTS+),
+# por lo que NO se instalan en el cluster: se usan las versiones del runtime.
+# ---------------------------------------------------------------------------
+
+# Motor de ejecución local (debe coincidir con la major de tu DBR)
+pyspark==3.5.0
+delta-spark==3.1.0
+
+# Configuración tipada
+pyyaml==6.0.1
+
+# Testing
+pytest==8.2.0
+chispa==0.10.1          # asserts de igualdad entre DataFrames de Spark
+
+# Calidad de código
+ruff==0.5.0
+mypy==1.10.0
+pre-commit==3.7.1       # hooks de git (ver .pre-commit-config.yaml)
+
+# (Opcional) CLI de Databricks Asset Bundles -> instalar aparte:
+#   brew install databricks      # macOS
+#   databricks bundle validate

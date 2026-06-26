@@ -1,0 +1,46 @@
+# ------------------------------------------------------------------
+# Datos crudos: NUNCA se versionan (tamaño + PII potencial).
+# Se documenta el esquema en docs/data_dictionary.md y se cargan a un
+# Volume de Unity Catalog / DBFS / S3, no al repo.
+# ------------------------------------------------------------------
+data/
+*.csv
+*.json
+*.parquet
+*.delta
+!docs/**/*.json          # permite ejemplos pequeños de esquema en docs/
+!**/sample/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.python-version
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Databricks
+.databricks/
+.databricks-login.json
+*.dbc
+
+# IDE / OS (macOS)
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Secretos
+.env
+*.pem
+*.key

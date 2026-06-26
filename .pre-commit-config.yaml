@@ -1,0 +1,43 @@
+# Pre-commit hooks. Instalar una vez (en tu Mac):
+#   pip install pre-commit
+#   pre-commit install                      # instala hooks de commit y push
+# Correr manualmente sobre todo el repo:
+#   pre-commit run --all-files
+#
+# Diseño: los hooks rápidos corren en cada COMMIT; los tests (lentos, levantan
+# Spark) corren en PRE-PUSH para no frenar cada commit.
+
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  # --- Lint + formato (Ruff) -------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.0
+    hooks:
+      - id: ruff               # lint con autofix
+        args: [--fix]
+        files: ^pyspark_project/(src|tests)/
+      - id: ruff-format        # formateo
+        files: ^pyspark_project/(src|tests)/
+
+  # --- Higiene de archivos ---------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml          # valida databricks.yml, ci.yml, etc.
+      - id: check-merge-conflict
+      - id: check-added-large-files   # impide subir prints.json/pays.csv por error
+        args: [--maxkb=5000]
+
+  # --- Tests (solo en pre-push: levantan Spark, ~30s) ------------------------
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest (features + expectations)
+        entry: pytest pyspark_project/tests -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

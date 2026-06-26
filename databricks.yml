@@ -1,0 +1,177 @@
+# ===========================================================================
+# Databricks Asset Bundle (DAB)
+# Despliega AMBOS pipelines (PySpark y SQL) como Jobs versionados.
+#   databricks bundle validate
+#   databricks bundle deploy -t dev
+#   databricks bundle run valueprops_pyspark_etl -t dev
+# ===========================================================================
+bundle:
+  name: valueprops-etl
+
+variables:
+  catalog:
+    description: Catálogo de Unity Catalog destino
+    default: valueprops
+  landing_volume:
+    description: Volumen UC donde aterrizan los archivos crudos
+    default: /Volumes/valueprops/raw/landing
+  sql_warehouse_id:
+    description: ID del SQL Warehouse (Pro/Serverless) para jobs SQL y alertas
+    default: REEMPLAZAR_warehouse_id
+  alert_email:
+    description: Correo que recibe las alertas de calidad de datos
+    default: tu-email@example.com
+
+targets:
+  dev:
+    mode: development          # prefija recursos con [dev tu_usuario], pausa schedules
+    default: true
+    workspace:
+      host: https://<your-workspace>.cloud.databricks.com
+  prod:
+    mode: production
+    workspace:
+      host: https://<your-workspace>.cloud.databricks.com
+    variables:
+      catalog: valueprops_prod
+
+# --- Clúster compartido (job compute, efímero) -----------------------------
+# Photon ON: clave para el rendimiento del range-join y de Delta.
+resources:
+  jobs:
+    valueprops_pyspark_etl:
+      name: "[${bundle.target}] valueprops-pyspark-etl"
+      job_clusters:
+        - job_cluster_key: etl_cluster
+          new_cluster:
+            spark_version: 15.4.x-photon-scala2.12   # DBR 15.4 LTS + Photon
+            node_type_id: m5d.large
+            autoscale: { min_workers: 1, max_workers: 4 }
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.delta.optimizeWrite.enabled: "true"
+              spark.databricks.delta.autoCompact.enabled: "true"
+              spark.sql.shuffle.partitions: "auto"
+      tasks:
+        - task_key: bronze
+          job_cluster_key: etl_cluster
+          notebook_task:
+            notebook_path: ./pyspark_project/notebooks/01_bronze.py
+            base_parameters: { catalog: "${var.catalog}", landing: "${var.landing_volume}" }
+        - task_key: silver
+          depends_on: [{ task_key: bronze }]
+          job_cluster_key: etl_cluster
+          notebook_task:
+            notebook_path: ./pyspark_project/notebooks/02_silver.py
+            base_parameters: { catalog: "${var.catalog}" }
+        - task_key: gold
+          depends_on: [{ task_key: silver }]
+          job_cluster_key: etl_cluster
+          notebook_task:
+            notebook_path: ./pyspark_project/notebooks/03_gold.py
+            base_parameters: { catalog: "${var.catalog}" }
+        - task_key: data_quality
+          depends_on: [{ task_key: gold }]
+          job_cluster_key: etl_cluster
+          notebook_task:
+            notebook_path: ./pyspark_project/notebooks/05_data_quality.py
+            base_parameters: { catalog: "${var.catalog}" }
+
+    valueprops_sql_etl:
+      name: "[${bundle.target}] valueprops-sql-etl"
+      tasks:
+        - task_key: bronze
+          sql_task:
+            warehouse_id: ${var.sql_warehouse_id}
+            file: { path: ./sql_project/sql/01_bronze.sql }
+        - task_key: silver
+          depends_on: [{ task_key: bronze }]
+          sql_task:
+            warehouse_id: ${var.sql_warehouse_id}
+            file: { path: ./sql_project/sql/02_silver.sql }
+        - task_key: gold
+          depends_on: [{ task_key: silver }]
+          sql_task:
+            warehouse_id: ${var.sql_warehouse_id}
+            file: { path: ./sql_project/sql/03_gold_features.sql }
+        - task_key: data_quality
+          depends_on: [{ task_key: gold }]
+          sql_task:
+            warehouse_id: ${var.sql_warehouse_id}
+            file: { path: ./sql_project/sql/05_quality_checks.sql }
+        - task_key: maintenance
+          depends_on: [{ task_key: data_quality }]
+          sql_task:
+            warehouse_id: ${var.sql_warehouse_id}
+            file: { path: ./sql_project/sql/04_optimize_maintenance.sql }
+
+# Define en tu terminal:  databricks bundle deploy --var="sql_warehouse_id=xxxx"
+
+  # --- Variante NATIVA: DLT / Lakeflow Declarative Pipeline -----------------
+  pipelines:
+    valueprops_dlt:
+      name: "[${bundle.target}] valueprops-dlt"
+      catalog: ${var.catalog}
+      target: gold
+      photon: true
+      serverless: true
+      configuration:
+        landing: ${var.landing_volume}
+      libraries:
+        - notebook:
+            path: ./pyspark_project/dlt/dlt_pipeline.py
+
+  # --- Alertas SQL (v2) sobre la calidad de datos ---------------------------
+  # NOTA: Databricks SQL Alerts v2 está en Public Preview (CLI >= 0.279).
+  # Cada alerta corre su query en el warehouse y notifica si se cruza el umbral.
+  alerts:
+    dq_critical_failures:
+      display_name: "[${bundle.target}] DQ · Expectations críticas violadas"
+      warehouse_id: ${var.sql_warehouse_id}
+      query_text: |
+        SELECT count(*) AS failed_critical
+        FROM ${var.catalog}.monitoring.dq_latest
+        WHERE action = 'fail' AND passed = false
+      schedule:
+        pause_status: UNPAUSED
+        quartz_cron_schedule: "0 0 7 * * ?"   # diario 7:00 AM
+        timezone_id: America/Bogota
+      evaluation:
+        comparison_operator: GREATER_THAN
+        source: { name: failed_critical, aggregation: MAX }
+        threshold: { value: { double_value: 0 } }
+        notification:
+          notify_on_ok: true
+          retrigger_seconds: 3600
+          subscriptions:
+            - user_email: ${var.alert_email}
+      custom_summary: "Calidad de datos: hay expectations 'fail' en rojo"
+      custom_description: |
+        Una o más expectations críticas (acción 'fail') NO pasaron en la última
+        corrida. Revisa valueprops.monitoring.dq_latest. El pipeline pudo haberse
+        abortado.
+
+    dq_failure_rate:
+      display_name: "[${bundle.target}] DQ · Tasa de fallos sobre umbral"
+      warehouse_id: ${var.sql_warehouse_id}
+      query_text: |
+        SELECT max(failure_pct) AS max_failure_pct
+        FROM ${var.catalog}.monitoring.dq_latest
+      schedule:
+        pause_status: UNPAUSED
+        quartz_cron_schedule: "0 0 7 * * ?"
+        timezone_id: America/Bogota
+      evaluation:
+        comparison_operator: GREATER_THAN
+        source: { name: max_failure_pct, aggregation: MAX }
+        threshold: { value: { double_value: 1.0 } }   # umbral: 1% de filas
+        notification:
+          notify_on_ok: false
+          retrigger_seconds: 3600
+          subscriptions:
+            - user_email: ${var.alert_email}
+      custom_summary: "Calidad de datos: tasa de fallos > 1%"
+      custom_description: |
+        La tasa de violaciones de alguna expectation superó el 1% de las filas.
+        Aunque no sea crítica ('warn'/'drop'), conviene investigar una posible
+        degradación de la fuente.
